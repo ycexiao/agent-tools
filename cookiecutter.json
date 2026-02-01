@@ -1,0 +1,8 @@
+{
+  "project_name": "agent-tools",
+  "github_username_or_orgname": "ycexiao",
+  "github_repo_name": "agent-tools",
+  "conda_pypi_package_dist_name": "agent-tools",
+  "package_dir_name": "agent_tools",
+  "contributors": "Yuchen Xiao"
+}
