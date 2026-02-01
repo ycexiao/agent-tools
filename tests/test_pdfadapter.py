@@ -42,16 +42,20 @@ def test_pdfadapter():
         "Uiso_0_1": 0.005,
         "delta2_1": 2,
     }
-    adapter.apply_parameter_values(initial_pdfadapter_pv_dict)
-
-    fit_pname = ["a_1", "s0", "Uiso_0_1", "delta2_1", "qdamp", "qbroad"]
-    for pname in fit_pname:
-        adapter.recipe.free(pname)
-        least_squares(
-            adapter.recipe.residual,
-            adapter.recipe.values,
-            x_scale="jac",
-        )
+    adapter.set_initial_parameter_values(initial_pdfadapter_pv_dict)
+    adapter.refine_parameters(
+        [
+            "a_1",
+            "s0",
+            "Uiso_0_1",
+            "delta2_1",
+            "qdamp",
+            "qbroad",
+        ]
+    )
+    out_dict = adapter.save_results(mode="dict")
+    for key, value in out_dict.items():
+        print(f"{key}: {value}")
     diffpyname_to_adaptername = {
         "fcc_Lat": "a_1",
         "s1": "s0",
@@ -71,3 +75,8 @@ def test_pdfadapter():
             )
             < 1e-5
         )
+
+
+def test_save_results():
+    # Implement later
+    pass

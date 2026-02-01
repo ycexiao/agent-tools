@@ -5,11 +5,18 @@ from diffpy.srfit.fitbase import (
     FitContribution,
     FitRecipe,
     Profile,
+    FitResults,
 )
 from diffpy.srfit.pdf import PDFGenerator
 import numpy
 import warnings
 from pathlib import Path
+from scipy.optimize import least_squares
+from typing import Literal
+import json
+from getpass import getuser
+from time import ctime
+import tempfile
 
 
 class PDFAdapter:
@@ -256,18 +263,134 @@ class PDFAdapter:
         recipe.fithooks[0].verbose = 0
         self.recipe = recipe
 
-    def apply_parameter_values(self, pv_dict: dict):
+    def set_initial_parameter_values(self, parameter_name_to_value: dict):
         """
         Update parameter values from the provided dictionary.
 
         Parameters
         ----------
-        pv_dict : dict
+        parameter_name_to_value : dict
             A dictionary mapping parameter names to their new values.
         """
         parameter_dict = {
             pname: parameter
             for pname, parameter in self.recipe._parameters.items()
         }
-        for pname, pvalue in pv_dict.items():
+        for pname, pvalue in parameter_name_to_value.items():
             parameter_dict[pname].setValue(pvalue)
+
+    def refine_parameters(self, parameter_names: list[str]):
+        """
+        Refine the parameters specified in the list and in that order. Must
+        be called after init_recipe.
+
+        Parameters
+        ----------
+        parameter_names : list of str
+            The names of the parameters to refine.
+        """
+        for pname in parameter_names:
+            self.recipe.free(pname)
+            least_squares(
+                self.recipe.residual,
+                self.recipe.values,
+                x_scale="jac",
+            )
+
+    def get_parameter_names(self) -> list[str]:
+        """
+        Get the names of all parameters in the recipe.
+
+        Returns
+        -------
+        list of str
+            A list of parameter names.
+        """
+        return list(self.recipe._parameters.keys())
+
+    def save_results(
+        self, mode: Literal["dict", "str"] = "str", filename=None
+    ):
+        """
+        Save the fitting results. Must be called after
+        refine_parameters.
+
+        Parameters
+        ----------
+        filename : str | None
+            The path to the output file. If None, results will not be saved to
+            a file. The default is None.
+        mode : {"dict", "str"}
+            The format to save the results.
+            "str" - Save results as a formatted text string.
+            "dict" - Save results as a JSON-compatible dictionary.
+        """
+        fit_results = FitResults(self.recipe)
+        if mode == "str":
+            if filename is None:
+                tmp_directory = tempfile.TemporaryDirectory()
+                temp_file = Path(tmp_directory.name) / "data.txt"
+                filename = str(temp_file)
+            fit_results.saveResults(filename)
+            with open(filename, "r") as f:
+                results_str = f.read()
+            if filename is None:
+                tmp_directory.cleanup()
+            return results_str
+
+        elif mode == "dict":
+            results_dict = {}
+            results_dict["residual"] = fit_results.residual
+            results_dict["contributions"] = (
+                fit_results.residual - fit_results.penalty
+            )
+            results_dict["restraints"] = fit_results.penalty
+            results_dict["chi2"] = fit_results.chi2
+            results_dict["reduced_chi2"] = fit_results.rchi2
+            results_dict["rw"] = fit_results.rw
+            # variables
+            results_dict["variables"] = {}
+            for name, val, unc in zip(
+                fit_results.varnames, fit_results.varvals, fit_results.varunc
+            ):
+                results_dict["variables"][name] = {
+                    "value": val,
+                    "uncertainty": unc,
+                }
+            # fixed variables
+            results_dict["fixed_variables"] = {}
+            if fit_results.fixednames is not None:
+                for name, val in zip(
+                    fit_results.fixednames, fit_results.fixedvals
+                ):
+                    results_dict["fixed_variables"][name] = {"value": val}
+            # constraints
+            results_dict["constraints"] = {}
+            if fit_results.connames and fit_results.showcon:
+                for con in fit_results.conresults.values():
+                    for i, loc in enumerate(con.conlocs):
+                        names = [obj.name for obj in loc]
+                        name = ".".join(names)
+                        val = con.convals[i]
+                        unc = con.conuncs[i]
+                        results_dict["constraints"][name] = {
+                            "value": val,
+                            "uncertainty": unc,
+                        }
+            # covariance matrix
+            results_dict["covariance_matrix"] = fit_results.cov
+            # certainty
+            certain = True
+            for con in fit_results.conresults.values():
+                if (con.dy == 1).all():
+                    certain = False
+            results_dict["certain"] = certain
+            if filename is not None:
+                with open(filename, "w") as f:
+                    json.dump(results_dict, f)
+            return results_dict
+
+        else:
+            raise ValueError(
+                f"Unsupported mode: {mode}. Please use 'json' or 'txt'."
+            )
