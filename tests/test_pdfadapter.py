@@ -26,12 +26,12 @@ def test_pdfadapter():
     diffpy_pv_dict = {}
     for pname, parameter in diffpycmi_recipe._parameters.items():
         diffpy_pv_dict[pname] = parameter.value
-    # pdfadapter fitting
+    # # pdfadapter fitting
     adapter = pdfadapter.PDFAdapter()
     adapter.init_profile(
-        profile_path, xmin=1.5, xmax=50, dx=0.01, qmax=25, qmin=0.1
+        str(profile_path), xmin=1.5, xmax=50, dx=0.01, qmax=25, qmin=0.1
     )
-    adapter.init_structures([structure_path])
+    adapter.init_structures([str(structure_path)])
     adapter.init_contribution()
     adapter.init_recipe()
     initial_pdfadapter_pv_dict = {
@@ -42,8 +42,8 @@ def test_pdfadapter():
         "Uiso_0_1": 0.005,
         "delta2_1": 2,
     }
-    adapter.set_initial_parameter_values(initial_pdfadapter_pv_dict)
-    adapter.refine_parameters(
+    adapter.set_initial_variable_values(initial_pdfadapter_pv_dict)
+    adapter.refine_variables(
         [
             "a_1",
             "s0",
@@ -53,9 +53,10 @@ def test_pdfadapter():
             "qbroad",
         ]
     )
-    out_dict = adapter.save_results(mode="dict")
-    for key, value in out_dict.items():
-        print(f"{key}: {value}")
+    out_dict = adapter.save_results(mode="dict", filename="fit_results.json")
+    # out_dict = adapter.save_results(mode="dict")
+    # for key, value in out_dict.items():
+    #     print(f"{key}: {value}")
     diffpyname_to_adaptername = {
         "fcc_Lat": "a_1",
         "s1": "s0",

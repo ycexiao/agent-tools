@@ -1,3 +1,4 @@
 diffpy.cmi
 scipy
 numpy
+prompt_toolkit

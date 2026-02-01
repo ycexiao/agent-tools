@@ -14,8 +14,6 @@ from pathlib import Path
 from scipy.optimize import least_squares
 from typing import Literal
 import json
-from getpass import getuser
-from time import ctime
 import tempfile
 
 
@@ -58,7 +56,7 @@ class PDFAdapter:
 
     def init_profile(
         self,
-        profile_path: Path,
+        profile_path: str,
         qmin=None,
         qmax=None,
         xmin=None,
@@ -75,7 +73,7 @@ class PDFAdapter:
 
         Parameters
         ----------
-        profile_path : Path
+        profile_path : str
             The path to the experimental PDF profile file.
         qmin : float, optional
             The minimum Q value for PDF calculation. Default is None.
@@ -90,7 +88,7 @@ class PDFAdapter:
         """
         profile = Profile()
         parser = PDFParser()
-        parser.parseString(profile_path.read_text())
+        parser.parseString(Path(profile_path).read_text())
         profile.loadParsedData(parser)
         if qmin:
             profile.meta["qmin"] = qmin
@@ -99,7 +97,7 @@ class PDFAdapter:
         profile.setCalculationRange(xmin=xmin, xmax=xmax, dx=dx)
         self.profile = profile
 
-    def init_structures(self, structure_paths: list[Path], run_parallel=True):
+    def init_structures(self, structure_paths: list[str], run_parallel=True):
         """
         Load and initialize the structures from the given file paths, and
         generate corresponding PDFGenerator objects.
@@ -112,7 +110,7 @@ class PDFAdapter:
 
         Parameters
         ----------
-        structure_paths : list of Path
+        structure_paths : list of str
             The list of paths to the structure files (CIF format).
 
         Notes
@@ -122,7 +120,7 @@ class PDFAdapter:
             - Add/Remove atoms.
             - symmetry operations?
         """
-        if isinstance(structure_paths, Path):
+        if isinstance(structure_paths, str):
             structure_paths = [structure_paths]
         structures = []
         spacegroups = []
@@ -140,6 +138,7 @@ class PDFAdapter:
                 )
                 ncpu = int(numpy.max([1, avail_cores]))
                 pool = Pool(processes=ncpu)
+                self.pool = pool
             except ImportError:
                 warnings.warn(
                     "\nYou don't appear to have the necessary packages for "
@@ -149,7 +148,7 @@ class PDFAdapter:
 
         for i, structure_path in enumerate(structure_paths):
             stru_parser = getParser("cif")
-            structure = stru_parser.parse(structure_path.read_text())
+            structure = stru_parser.parse(Path(structure_path).read_text())
             sg = getattr(stru_parser, "spacegroup", None)
             spacegroup = sg.short_name if sg is not None else "P1"
             structures.append(structure)
@@ -157,7 +156,7 @@ class PDFAdapter:
             pdfgenerator = PDFGenerator(f"G{i+1}")
             pdfgenerator.setStructure(structure)
             if run_parallel:
-                pdfgenerator.parallel(ncpu=ncpu, mapfunc=pool.map)
+                pdfgenerator.parallel(ncpu=ncpu, mapfunc=self.pool.map)
             pdfgenerators.append(pdfgenerator)
         self.spacegroups = spacegroups
         self.pdfgenerators = pdfgenerators
@@ -263,34 +262,30 @@ class PDFAdapter:
         recipe.fithooks[0].verbose = 0
         self.recipe = recipe
 
-    def set_initial_parameter_values(self, parameter_name_to_value: dict):
+    def set_initial_variable_values(self, variable_name_to_value: dict):
         """
         Update parameter values from the provided dictionary.
 
         Parameters
         ----------
-        parameter_name_to_value : dict
-            A dictionary mapping parameter names to their new values.
+        variable_name_to_value : dict
+            A dictionary mapping variable names to their new values.
         """
-        parameter_dict = {
-            pname: parameter
-            for pname, parameter in self.recipe._parameters.items()
-        }
-        for pname, pvalue in parameter_name_to_value.items():
-            parameter_dict[pname].setValue(pvalue)
+        for vname, vvalue in variable_name_to_value.items():
+            self.recipe._parameters[vname].setValue(vvalue)
 
-    def refine_parameters(self, parameter_names: list[str]):
+    def refine_variables(self, variable_names: list[str]):
         """
         Refine the parameters specified in the list and in that order. Must
         be called after init_recipe.
 
         Parameters
         ----------
-        parameter_names : list of str
-            The names of the parameters to refine.
+        variable_names : list of str
+            The names of the variables to refine.
         """
-        for pname in parameter_names:
-            self.recipe.free(pname)
+        for vname in variable_names:
+            self.recipe.free(vname)
             least_squares(
                 self.recipe.residual,
                 self.recipe.values,
@@ -378,7 +373,7 @@ class PDFAdapter:
                             "uncertainty": unc,
                         }
             # covariance matrix
-            results_dict["covariance_matrix"] = fit_results.cov
+            results_dict["covariance_matrix"] = fit_results.cov.tolist()
             # certainty
             certain = True
             for con in fit_results.conresults.values():
@@ -387,7 +382,7 @@ class PDFAdapter:
             results_dict["certain"] = certain
             if filename is not None:
                 with open(filename, "w") as f:
-                    json.dump(results_dict, f)
+                    json.dump(results_dict, f, indent=2)
             return results_dict
 
         else:
