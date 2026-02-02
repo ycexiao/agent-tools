@@ -1,3 +1,4 @@
+from os import name
 from pathlib import Path
 import re
 import json
@@ -6,8 +7,14 @@ from typing import Literal
 
 from requests import session
 from agent_tools.pdfadapter import PDFAdapter
+from diffpy.srfit.fitbase import FitResults
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
+from matplotlib import pyplot as plt
+from queue import Queue
+from bg_mpl_stylesheets.styles import all_styles
+
+plt.style.use(all_styles["bg-style"])
 
 
 class SequentialPDFFitRunner:
@@ -16,6 +23,7 @@ class SequentialPDFFitRunner:
         self.input_files_completed = []
         self.input_files_running = []
         self.adapter = PDFAdapter()
+        self.plot_data = {}
 
     def load_inputs(
         self,
@@ -23,6 +31,10 @@ class SequentialPDFFitRunner:
         structure_path,
         output_result_dir="results",
         filename_order_pattern=r"(\d+)K\.gr",
+        whether_plot_y=False,
+        whether_plot_ycalc=False,
+        plot_variable_names=None,
+        plot_result_entry_names=None,
         refine_variable_names=None,
         initial_variable_values=None,
         xmin=None,
@@ -43,7 +55,68 @@ class SequentialPDFFitRunner:
             "qmax": qmax,
             "refine_variable_names": refine_variable_names or [],
             "initial_variable_values": initial_variable_values or {},
+            "whether_plot_y": whether_plot_y,
+            "whether_plot_ycalc": whether_plot_ycalc,
+            "plot_variable_names": plot_variable_names or [],
         }
+        if whether_plot_y and whether_plot_ycalc:
+            fig, axes = plt.subplots(2, 1)
+            (line,) = axes[0].plot(
+                [],
+                [],
+                label="ycalc",
+                color=plt.rcParams["axes.prop_cycle"].by_key()["color"][0],
+            )
+            self.plot_data["ycalc"] = {
+                "line": line,
+                "xdata": Queue(),
+                "ydata": Queue(),
+            }
+            (line,) = axes[1].plot(
+                [],
+                [],
+                label="y",
+                color=plt.rcParams["axes.prop_cycle"].by_key()["color"][1],
+            )
+            self.plot_data["y"] = {
+                "line": line,
+                "xdata": Queue(),
+                "ydata": Queue(),
+            }
+        elif whether_plot_ycalc:
+            fig, ax = plt.subplots()
+            (line,) = ax.plot([], [], label="ycalc")
+            self.plot_data["ycalc"] = {
+                "line": line,
+                "xdata": Queue(),
+                "ydata": Queue(),
+            }
+        elif whether_plot_y:
+            fig, ax = plt.subplots()
+            (line,) = ax.plot([], [], label="y")
+            self.plot_data["y"] = {
+                "line": line,
+                "xdata": Queue(),
+                "ydata": Queue(),
+            }
+        if plot_variable_names:
+            self.plot_data["variables"] = {}
+            for var_name in plot_variable_names:
+                fig, ax = plt.subplots()
+                (line,) = ax.plot([], [], label=var_name, marker="o")
+                self.plot_data["variables"][var_name] = {
+                    var_name: {"line": line, "buffer": [], "ydata": Queue()}
+                }
+                fig.suptitle(f"Variable: {var_name}")
+        if plot_result_entry_names:
+            self.plot_data["result_entries"] = {}
+            for entry_name in plot_result_entry_names:
+                fig, ax = plt.subplots()
+                (line,) = ax.plot([], [], label=entry_name, marker="o")
+                self.plot_data["result_entries"][entry_name] = {
+                    entry_name: {"line": line, "buffer": [], "ydata": Queue()}
+                }
+                fig.suptitle(f"Result Entry: {entry_name}")
 
     def check_for_new_data(self):
         input_data_dir = self.inputs["input_data_dir"]
@@ -141,6 +214,27 @@ class SequentialPDFFitRunner:
                 for name, pack in results["variables"].items()
             }
             self.input_files_completed.append(input_file)
+            if "ycalc" in self.plot_data:
+                xdata = self.adapter.recipe.pdfcontribution.profile.x
+                ydata = self.adapter.recipe.pdfcontribution.profile.ycalc
+                self.plot_data["ycalc"]["xdata"].put(xdata)
+                self.plot_data["ycalc"]["ydata"].put(ydata)
+            if "y" in self.plot_data:
+                xdata = self.adapter.recipe.pdfcontribution.profile.x
+                ydata = self.adapter.recipe.pdfcontribution.profile.y
+                self.plot_data["y"]["xdata"].put(xdata)
+                self.plot_data["y"]["ydata"].put(ydata)
+            for var_name in self.plot_data.get("variables", {}):
+                new_value = self.adapter.recipe._parameters[var_name].value
+                self.plot_data["variables"][var_name][var_name]["ydata"].put(
+                    new_value
+                )
+            for entry_name in self.plot_data.get("result_entries", {}):
+                fit_results = FitResults(self.adapter.recipe)
+                entry_value = getattr(fit_results, entry_name)
+                self.plot_data["result_entries"][entry_name][entry_name][
+                    "ydata"
+                ].put(entry_value)
             print(f"Completed processing {input_file.name}.")
         self.input_files_running = []
 
@@ -150,13 +244,16 @@ class SequentialPDFFitRunner:
         elif mode == "stream":
             stop_event = threading.Event()
             session = PromptSession()
+            if self.plot_data is not None:
+                plt.ion()
+                plt.pause(0.05)
 
             def stream_loop():
                 while not stop_event.is_set():
                     self.start_one_round()
                     stop_event.wait(1)  # Check for new data every 1 second
 
-            def input_thread():
+            def input_loop():
                 with patch_stdout():
                     print("=== COMMANDS ===")
                     print("Type STOP to exit")
@@ -173,10 +270,48 @@ class SequentialPDFFitRunner:
                                 "Unrecognized input. Please type 'STOP' to end."
                             )
 
-            input_thread = threading.Thread(target=input_thread)
+            input_thread = threading.Thread(target=input_loop)
             input_thread.start()
             fit_thread = threading.Thread(target=stream_loop)
             fit_thread.start()
+            while not stop_event.is_set():
+                for key, plot_pack in self.plot_data.items():
+                    if key in ["ycalc", "y"]:
+                        line = plot_pack["line"]
+                        if not plot_pack["xdata"].empty():
+                            xdata = plot_pack["xdata"].get()
+                            ydata = plot_pack["ydata"].get()
+                            line.set_xdata(xdata)
+                            line.set_ydata(ydata)
+                            line.axes.relim()
+                            line.axes.autoscale_view()
+                    elif key == "variables":
+                        for var_name, var_pack in plot_pack.items():
+                            line = var_pack[var_name]["line"]
+                            buffer = var_pack[var_name]["buffer"]
+                            if not var_pack[var_name]["ydata"].empty():
+                                new_y = var_pack[var_name]["ydata"].get()
+                                buffer.append(new_y)
+                                xdata = list(range(1, len(buffer) + 1))
+                                ydata = buffer
+                                line.set_xdata(xdata)
+                                line.set_ydata(ydata)
+                                line.axes.relim()
+                                line.axes.autoscale_view()
+                    elif key == "result_entries":
+                        for entry_name, entry_pack in plot_pack.items():
+                            line = entry_pack[entry_name]["line"]
+                            buffer = entry_pack[entry_name]["buffer"]
+                            if not entry_pack[entry_name]["ydata"].empty():
+                                new_y = entry_pack[entry_name]["ydata"].get()
+                                buffer.append(new_y)
+                                xdata = list(range(1, len(buffer) + 1))
+                                ydata = buffer
+                                line.set_xdata(xdata)
+                                line.set_ydata(ydata)
+                                line.axes.relim()
+                                line.axes.autoscale_view()
+                plt.pause(0.05)
             fit_thread.join()
             input_thread.join()
         else:
@@ -211,5 +346,9 @@ if __name__ == "__main__":
         dx=0.01,
         qmax=25,
         qmin=0.1,
+        # whether_plot_y=True,
+        # whether_plot_ycalc=True,
+        plot_variable_names=["a_1", "s0"],
+        plot_result_entry_names=["residual"],
     )
     sts.start(mode="stream")
