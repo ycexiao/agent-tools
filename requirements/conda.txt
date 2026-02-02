@@ -2,3 +2,4 @@ diffpy.cmi
 scipy
 numpy
 prompt_toolkit
+bg-mpl-stylesheets
